@@ -1,0 +1,51 @@
+# Stage 1: Build Stage
+# Use a full Debian-based image to get the build tools we need.
+FROM python:3.11-slim AS builder
+
+# Set the working directory
+WORKDIR /app
+
+# Install Speedtest CLI and build dependencies in one layer to reduce image size
+# Using && chains commands together, and the final cleanup happens before the layer is cached.
+RUN apt-get update && \
+    apt-get install -y curl gnupg lsb-release && \
+    curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash && \
+    apt-get install -y speedtest && \
+    # Clean up apt cache to reduce layer size
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+# Copy only the requirements file first to leverage Docker's layer caching.
+# This layer will only be rebuilt if requirements.txt changes.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+
+# Stage 2: Final Stage
+# Use a clean, minimal base image for the final application.
+FROM python:3.11-slim
+
+# Create a non-root user to run the application for better security
+# The --no-create-home flag is used as this user won't need a home directory.
+RUN useradd --create-home --shell /bin/bash appuser
+WORKDIR /home/appuser/app
+
+# Copy the installed Speedtest CLI binary from the builder stage
+COPY --from=builder /usr/bin/speedtest /usr/bin/speedtest
+
+# Copy the installed Python packages from the builder stage
+# This copies the entire site-packages directory into the final image.
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# Copy the application code
+COPY src/track_speed.py .
+
+# Change ownership of the app directory to the new user
+RUN chown -R appuser:appuser /home/appuser
+
+# Switch to the non-root user
+USER appuser
+
+# Set the entrypoint for the container
+CMD ["python3", "-u", "track_speed.py"]
